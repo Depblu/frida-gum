@@ -251,7 +251,11 @@ gum_memory_get_protection (gconstpointer address,
 
   for (i = 0; i != num_mapinfos; i++)
   {
-    start = GSIZE_TO_POINTER (mapinfos[i].vaddr & 0xffffffff);
+#ifdef __aarch64__
+    start = GSIZE_TO_POINTER (mapinfos[i].vaddr & 0xffffffffffffffff);
+#else
+    start = GSIZE_TO_POINTER (mapinfos[i].vaddr & 0xffffffff); 
+#endif    
     end = start + mapinfos[i].size;
 
     if (start > address)

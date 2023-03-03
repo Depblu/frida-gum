@@ -24,4 +24,4 @@ meson setup \
     --strip \
     -Dstem_suffix="-$os-$arch" \
     build
-meson install -C build
+meson install -C build --destdir ../../../data/

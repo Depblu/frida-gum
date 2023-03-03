@@ -4057,7 +4057,11 @@ TESTCASE (socket_type_can_be_inspected)
 
   fd = open (
 # ifdef HAVE_QNX
+# ifdef __aarch64__
+      "/usr/lib/ldqnx-64.so.2",
+#else
       "/usr/lib/ldqnx.so.2",
+#endif //__aarch64__
 # else
       "/etc/hosts",
 # endif

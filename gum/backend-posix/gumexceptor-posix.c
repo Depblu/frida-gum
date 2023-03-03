@@ -227,7 +227,7 @@ gum_exceptor_backend_new (GumExceptionHandler handler,
   return backend;
 }
 
-static void
+static __attribute__((noinline)) void
 gum_exceptor_backend_attach (GumExceptorBackend * self)
 {
   GumInterceptor * interceptor = self->interceptor;

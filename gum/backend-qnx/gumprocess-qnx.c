@@ -11,6 +11,7 @@
 #include "gumqnx.h"
 #include "gumqnx-priv.h"
 
+//#include <cstdio>
 #include <devctl.h>
 #include <dlfcn.h>
 #include <fcntl.h>
@@ -18,6 +19,7 @@
 #include <sys/neutrino.h>
 #include <sys/procfs.h>
 #include <ucontext.h>
+#include <unistd.h>
 
 #define GUM_QNX_MODULE_FLAG_EXECUTABLE 0x00000200
 
@@ -89,7 +91,7 @@ gum_process_query_libc_name (void)
 static gchar *
 gum_try_init_libc_name (void)
 {
-  const gpointer exit_impl = dlsym (RTLD_NEXT, "exit");
+  const gpointer exit_impl = dlsym (RTLD_NEXT, "calloc");
 
   if (!gum_process_resolve_module_pointer (exit_impl, &gum_libc_name, NULL))
     return NULL;
@@ -157,6 +159,21 @@ beach:
   return found;
 }
 
+
+static void print_cpu_context_arm64(GumCpuContext *cpu_context)
+  {
+    printf("----------gum cpu_context----------\n");
+    printf("pc  :[%lx]\n", cpu_context->pc);
+    printf("sp  :[%lx]\n", cpu_context->sp);
+    printf("nzcv:[%lx]\n", cpu_context->nzcv);
+    for(int i = 0;i < sizeof(cpu_context->x)/sizeof(guint64); i++){
+        printf("x%02d :[%lx]\n", i, cpu_context->x[i]);
+    }
+    printf("fp:[%lx]\n", cpu_context->fp);
+    printf("lr:[%lx]\n", cpu_context->lr);
+  }
+
+
 gboolean
 gum_process_modify_thread (GumThreadId thread_id,
                            GumModifyThreadFunc func,
@@ -167,6 +184,8 @@ gum_process_modify_thread (GumThreadId thread_id,
   pid_t child;
   int status;
 
+  int ppid = getpid ();
+
   if (ThreadCtl (_NTO_TCTL_ONE_THREAD_HOLD, GSIZE_TO_POINTER (thread_id)) == -1)
     goto beach;
   holding = TRUE;
@@ -174,45 +193,67 @@ gum_process_modify_thread (GumThreadId thread_id,
   child = vfork ();
   if (child == -1)
     goto beach;
-
+  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
+  //sleep(1);
+  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   if (child == 0)
   {
+
     gchar as_path[PATH_MAX];
     int fd, res G_GNUC_UNUSED;
     procfs_greg gregs;
     GumCpuContext cpu_context;
-
+    
+    int pid = getpid ();
+    printf("......child_process gdb cmd:[attach %d] run......\n", pid);
+    sleep(20);
     sprintf (as_path, "/proc/%d/as", getppid ());
 
     fd = open (as_path, O_RDWR);
     g_assert (fd != -1);
 
+    printf("[%d]:%s:%d:befor_tid:[%lu]\n", pid, __FILE__, __LINE__, thread_id);
     res = devctl (fd, DCMD_PROC_CURTHREAD, &thread_id, sizeof (thread_id),
         NULL);
     g_assert (res == 0);
+    printf("[%d]:%s:%d:after_tid:[%lu]\n", pid, __FILE__, __LINE__, thread_id);
 
     res = devctl (fd, DCMD_PROC_GETGREG, &gregs, sizeof (gregs), NULL);
     g_assert (res == 0);
 
     gum_cpu_context_from_qnx (&gregs, &cpu_context);
+    print_cpu_context_arm64(&cpu_context);
+    printf("[%d]:%s:%d:pc:[%lx]\n", pid, __FILE__, __LINE__, gregs.aarch64.elr);
     func (thread_id, &cpu_context, user_data);
+    print_cpu_context_arm64(&cpu_context);
+    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     gum_cpu_context_to_qnx (&cpu_context, &gregs);
-
+    printf("[%d]:%s:%d:pc:[%lx]\n", pid, __FILE__, __LINE__, gregs.aarch64.elr);
     res = devctl (fd, DCMD_PROC_SETGREG, &gregs, sizeof (gregs), NULL);
+    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     g_assert (res == 0);
-
+    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     close (fd);
+    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     _exit (0);
+    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
+  }else{
+    printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
+    //sleep(30);
   }
 
+  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   waitpid (child, &status, 0);
-
+  //wait(&status);
+  printf("[%d]:%s:%d, status:%d, errno:%d\n", ppid, __FILE__, __LINE__, status, errno);
   success = TRUE;
 
 beach:
+  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   if (holding)
     ThreadCtl (_NTO_TCTL_ONE_THREAD_CONT, GSIZE_TO_POINTER (thread_id));
 
+  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   return success;
 }
 
@@ -279,8 +320,13 @@ gum_process_enumerate_modules (GumFoundModuleFunc func,
     gchar * resolved_path, * resolved_name;
     GumModuleDetails details;
     GumMemoryRange range;
+#ifdef __aarch64__
+    const Elf64_Ehdr * ehdr;
+    const Elf64_Phdr * phdr;
+#else
     const Elf32_Ehdr * ehdr;
     const Elf32_Phdr * phdr;
+#endif
     guint i;
 
     if ((mod->flags & GUM_QNX_MODULE_FLAG_EXECUTABLE) != 0)
@@ -308,11 +354,16 @@ gum_process_enumerate_modules (GumFoundModuleFunc func,
     phdr = (gconstpointer) ehdr + ehdr->e_ehsize;
     for (i = 0; i != ehdr->e_phnum; i++)
     {
-      const Elf32_Phdr * h = &phdr[i];
+      #ifdef __aarch64__
+          const Elf64_Phdr * h = &phdr[i];
+      #else
+          const Elf32_Phdr * h = &phdr[i];
+      #endif
       if (h->p_type == PT_LOAD)
         range.size += h->p_memsz;
     }
 
+    //printf("name:{%s} range:{%lx, %lu} path:{%s}\n", details.name, details.range->base_address, details.range->size, details.path);
     carry_on = func (&details, user_data);
 
     g_free (resolved_name);
@@ -691,13 +742,17 @@ gum_qnx_query_program_path_for_self (GError ** error)
     char buffer[PATH_MAX];
   } name;
 
+#if 1
+  fd = open ("/proc/self/exefile", O_RDONLY);
+  read(fd, (char*)name.info.path, PATH_MAX);
+#else
   fd = open ("/proc/self/as", O_RDONLY);
   if (fd == -1)
     goto failure;
 
   if (devctl (fd, DCMD_PROC_MAPDEBUG_BASE, &name, sizeof (name), 0) != EOK)
     goto failure;
-
+#endif
   if (g_path_is_absolute (name.info.path))
   {
     program_path = g_strdup (name.info.path);
@@ -825,6 +880,21 @@ gum_resolve_path (const gchar * path)
   return canonical_path;
 }
 
+/*
+struct _GumArm64CpuContext
+{
+  guint64 pc;
+  guint64 sp;
+  guint64 nzcv;
+
+  guint64 x[29];
+  guint64 fp;
+  guint64 lr;
+
+  GumArm64VectorReg v[32];
+};
+*/
+
 static void
 gum_cpu_context_from_qnx (const debug_greg_t * gregs,
                           GumCpuContext * ctx)
@@ -859,6 +929,20 @@ gum_cpu_context_from_qnx (const debug_greg_t * gregs,
 
   memcpy (ctx->r, regs->gpr, sizeof (ctx->r));
   ctx->lr = regs->gpr[ARM_REG_R14];
+#elif defined (HAVE_ARM64)
+  const AARCH64_CPU_REGISTERS * regs = &gregs->aarch64;
+  gsize i;
+
+  ctx->pc = AARCH64_GET_REGIP(regs);
+  ctx->sp = AARCH64_GET_REGSP(regs);
+  ctx->nzcv = 0;
+
+  for (i = 0; i != G_N_ELEMENTS (ctx->x); i++)
+    ctx->x[i] = regs->gpr[i];
+  ctx->fp = regs->gpr[AARCH64_REG_X29];
+  ctx->lr = regs->gpr[AARCH64_REG_LR];
+
+  memset (ctx->v, 0, sizeof (ctx->v));
 #else
 # error Fix this for other architectures
 #endif
@@ -896,6 +980,18 @@ gum_cpu_context_to_qnx (const GumCpuContext * ctx,
 
   memcpy (regs->gpr, ctx->r, sizeof (ctx->r));
   regs->gpr[ARM_REG_R14] = ctx->lr;
+#elif defined (HAVE_ARM64)
+  AARCH64_CPU_REGISTERS * regs = &gregs->aarch64;
+  
+  AARCH64_SET_REGIP(regs, ctx->pc);
+  AARCH64_SET_REGSP(regs, ctx->sp);
+
+  gsize i;
+  for (i = 0; i != G_N_ELEMENTS (ctx->x); i++)
+    regs->gpr[i] = ctx->x[i];
+  regs->gpr[AARCH64_REG_X29] = ctx->fp;
+  regs->gpr[AARCH64_REG_LR] = ctx->lr;
+
 #else
 # error Fix this for other architectures
 #endif
@@ -973,6 +1069,21 @@ gum_qnx_parse_ucontext (const ucontext_t * uc,
   for (i = 0; i != G_N_ELEMENTS (ctx->r); i++)
     ctx->r[i] = cpu->gpr[i];
   ctx->lr = cpu->gpr[ARM_REG_LR];
+#elif defined (HAVE_ARM64)
+  const AARCH64_CPU_REGISTERS * regs = &uc->uc_mcontext.cpu;
+  gsize i;
+
+  ctx->pc = AARCH64_GET_REGIP(regs);
+  ctx->sp = AARCH64_GET_REGSP(regs);
+  ctx->nzcv = 0;
+
+  for (i = 0; i != G_N_ELEMENTS (ctx->x); i++)
+    ctx->x[i] = regs->gpr[i];
+  ctx->fp = regs->gpr[AARCH64_REG_X29];
+  ctx->lr = regs->gpr[AARCH64_REG_LR];
+
+  memset (ctx->v, 0, sizeof (ctx->v));
+
 #else
 # error FIXME
 #endif
@@ -1016,6 +1127,17 @@ gum_qnx_unparse_ucontext (const GumCpuContext * ctx,
   for (i = 0; i != G_N_ELEMENTS (ctx->r); i++)
     cpu->gpr[i] = ctx->r[i];
   cpu->gpr[ARM_REG_LR] = ctx->lr;
+#elif defined (HAVE_ARM64)
+  AARCH64_CPU_REGISTERS * regs = &uc->uc_mcontext.cpu;
+  
+  AARCH64_SET_REGIP(regs, ctx->pc);
+  AARCH64_SET_REGSP(regs, ctx->sp);
+
+  gsize i;
+  for (i = 0; i != G_N_ELEMENTS (ctx->x); i++)
+    regs->gpr[i] = ctx->x[i];
+  regs->gpr[AARCH64_REG_X29] = ctx->fp;
+  regs->gpr[AARCH64_REG_LR] = ctx->lr;
 #else
 # error FIXME
 #endif
