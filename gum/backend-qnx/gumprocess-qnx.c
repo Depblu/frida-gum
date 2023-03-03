@@ -173,7 +173,9 @@ static void print_cpu_context_arm64(GumCpuContext *cpu_context)
     printf("lr:[%lx]\n", cpu_context->lr);
   }
 
-
+#include <sys/neutrino.h>
+#include <sys/netmgr.h>
+#include <errno.h>
 gboolean
 gum_process_modify_thread (GumThreadId thread_id,
                            GumModifyThreadFunc func,
@@ -184,18 +186,89 @@ gum_process_modify_thread (GumThreadId thread_id,
   pid_t child;
   int status;
 
-  int ppid = getpid ();
-
   if (ThreadCtl (_NTO_TCTL_ONE_THREAD_HOLD, GSIZE_TO_POINTER (thread_id)) == -1)
     goto beach;
   holding = TRUE;
+#if 1
+  int channel_id = ChannelCreate_r(_NTO_CHF_DISCONNECT);
+  g_assert (channel_id > 0);
+  //qnx 7.1 vfork is just a wrapper of fork
+  child = vfork ();
+  if (child == -1)
+    goto beach;
+  if(child > 0)
+  {
+    //parent call
+    GumCpuContext cpu_context;
+
+    int rcvid = MsgReceive_r(channel_id,
+                            (void *)&cpu_context,
+                            sizeof(cpu_context),
+                            NULL);
+    g_assert (rcvid > 0);
+    //call func
+    func (thread_id, &cpu_context, user_data);
+    int rpy_ret = MsgReply_r(rcvid,
+                            0,
+                            (const void *)&cpu_context,
+                            sizeof(cpu_context));
+    g_assert (rpy_ret == 0);
+
+    waitpid (child, &status, 0);
+    success = TRUE;
+    ChannelDestroy_r(channel_id);
+  }else{
+    //child call
+    GumCpuContext cpu_context;
+    GumCpuContext new_cpu_context;
+
+    int coid = ConnectAttach_r( ND_LOCAL_NODE,
+                    getppid (),
+                    channel_id,
+                    _NTO_SIDE_CHANNEL,
+                    _NTO_COF_CLOEXEC );
+    g_assert (rcvid > 0);
+
+    gchar as_path[PATH_MAX];
+    int fd, res G_GNUC_UNUSED;
+    procfs_greg gregs;
+
+    sprintf (as_path, "/proc/%d/as", getppid ());
+    fd = open (as_path, O_RDWR);
+    g_assert (fd != -1);
+
+    res = devctl (fd, DCMD_PROC_CURTHREAD, &thread_id, sizeof (thread_id),
+        NULL);
+    g_assert (res == 0);
+
+    res = devctl (fd, DCMD_PROC_GETGREG, &gregs, sizeof (gregs), NULL);
+    g_assert (res == 0);
+
+    gum_cpu_context_from_qnx (&gregs, &cpu_context);
+    //print_cpu_context_arm64(&cpu_context);
+
+    long snd_ret = MsgSend_r(coid,
+                            (const void*) &cpu_context,
+                            sizeof(cpu_context),
+                            (void*) &new_cpu_context,
+                            sizeof(cpu_context));
+    g_assert (snd_ret == 0);
+    ConnectDetach_r(coid);
+
+    //print_cpu_context_arm64(&new_cpu_context);
+    gum_cpu_context_to_qnx (&new_cpu_context, &gregs);
+    res = devctl (fd, DCMD_PROC_SETGREG, &gregs, sizeof (gregs), NULL);
+    g_assert (res == 0);
+    close (fd);
+    _exit (0);
+  }
+#else
+  int ppid = getpid ();
 
   child = vfork ();
   if (child == -1)
     goto beach;
-  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
-  //sleep(1);
-  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
+
   if (child == 0)
   {
 
@@ -212,11 +285,9 @@ gum_process_modify_thread (GumThreadId thread_id,
     fd = open (as_path, O_RDWR);
     g_assert (fd != -1);
 
-    printf("[%d]:%s:%d:befor_tid:[%lu]\n", pid, __FILE__, __LINE__, thread_id);
     res = devctl (fd, DCMD_PROC_CURTHREAD, &thread_id, sizeof (thread_id),
         NULL);
     g_assert (res == 0);
-    printf("[%d]:%s:%d:after_tid:[%lu]\n", pid, __FILE__, __LINE__, thread_id);
 
     res = devctl (fd, DCMD_PROC_GETGREG, &gregs, sizeof (gregs), NULL);
     g_assert (res == 0);
@@ -226,35 +297,21 @@ gum_process_modify_thread (GumThreadId thread_id,
     printf("[%d]:%s:%d:pc:[%lx]\n", pid, __FILE__, __LINE__, gregs.aarch64.elr);
     func (thread_id, &cpu_context, user_data);
     print_cpu_context_arm64(&cpu_context);
-    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     gum_cpu_context_to_qnx (&cpu_context, &gregs);
     printf("[%d]:%s:%d:pc:[%lx]\n", pid, __FILE__, __LINE__, gregs.aarch64.elr);
     res = devctl (fd, DCMD_PROC_SETGREG, &gregs, sizeof (gregs), NULL);
-    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     g_assert (res == 0);
-    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     close (fd);
-    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
     _exit (0);
-    printf("[%d]:%s:%d\n", pid, __FILE__, __LINE__);
-  }else{
-    printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
-    //sleep(30);
   }
-
-  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
-  waitpid (child, &status, 0);
-  //wait(&status);
-  printf("[%d]:%s:%d, status:%d, errno:%d\n", ppid, __FILE__, __LINE__, status, errno);
-  success = TRUE;
+#endif
 
 beach:
-  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   if (holding)
     ThreadCtl (_NTO_TCTL_ONE_THREAD_CONT, GSIZE_TO_POINTER (thread_id));
-
-  printf("[%d]:%s:%d\n", ppid, __FILE__, __LINE__);
   return success;
+
+
 }
 
 void
