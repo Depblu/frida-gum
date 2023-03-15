@@ -113,7 +113,7 @@ gum_process_is_debugger_attached (void)
   gint fd, res G_GNUC_UNUSED;
   procfs_status status;
 
-  fd = open ("/proc/self", O_RDONLY);
+  fd = open ("/proc/self/as", O_RDONLY);
   g_assert (fd != -1);
 
   status.tid = gettid ();
@@ -144,7 +144,7 @@ gum_process_has_thread (GumThreadId thread_id)
   gint fd;
   procfs_status status;
 
-  fd = open ("/proc/self", O_RDONLY);
+  fd = open ("/proc/self/as", O_RDONLY);
   g_assert (fd != -1);
 
   status.tid = thread_id;
