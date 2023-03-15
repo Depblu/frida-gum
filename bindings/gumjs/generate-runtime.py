@@ -21,6 +21,26 @@ EXACT_DEPS = {
     "frida-swift-bridge": "2.0.6"
 }
 
+def qnx_modify_frida_java_bridge(output_dir, replace_direction):
+    workdir = f"{output_dir}/node_modules/frida-java-bridge"
+    print(f"+++++++++qnx_modify_frida_java_bridge++++++++{workdir}")
+    pre_dir = os.popen("pwd").read()
+    os.chdir(workdir)
+    if replace_direction == 'so->so.5':
+        grep_res = os.popen("grep -r \"'libc.so'\"")
+    else:
+        grep_res = os.popen("grep -r \"'libc.so.5'\"")
+    lista = grep_res.read().split('\n')
+
+    for oneline in lista:
+        listb = oneline.split(':')
+        if len(listb) == 2:
+            if replace_direction == 'so->so.5':
+                os.system(f'sed -i "s/\'libc.so\'/\'libc.so.5\'/g" {listb[0]}')
+            else:
+                os.system(f'sed -i "s/\'libc.so.5\'/\'libc.so\'/g" {listb[0]}')
+    #os.chdir(pre_dir)
+
 
 def generate_runtime(backends, arch, endian, input_dir, gum_dir, capstone_incdir, libtcc_incdir, quickcompile, output_dir):
     frida_compile = output_dir / "node_modules" / ".bin" / make_script_filename("frida-compile")
@@ -62,6 +82,7 @@ def generate_runtime(backends, arch, endian, input_dir, gum_dir, capstone_incdir
             ])
             raise EnvironmentError(message)
 
+    qnx_modify_frida_java_bridge(output_dir, 'so->so.5')
 
     runtime_reldir = Path("runtime")
     runtime_srcdir = input_dir / runtime_reldir
@@ -69,7 +90,6 @@ def generate_runtime(backends, arch, endian, input_dir, gum_dir, capstone_incdir
     if runtime_intdir.exists():
         shutil.rmtree(runtime_intdir)
     shutil.copytree(runtime_srcdir, runtime_intdir)
-
 
     if "qjs" in backends:
         quick_tmp_dir = Path("runtime-build-quick")
